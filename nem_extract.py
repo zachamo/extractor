@@ -35,16 +35,13 @@ HEADER_FORMAT = {
     'receipts_hash': '32s',
     'state_hash': '32s',
     'beneficiary_address': '24s',
-    'fee_multiplier': 'I',
-}
+    'fee_multiplier': 'I'}
 
 HEADER_LEN = 372
 
 
-
 FOOTER_FORMAT = {
-    'reserved': 'I',
-    }
+    'reserved': 'I'}
 
 FOOTER_LEN = 4
 
@@ -53,8 +50,7 @@ IMPORTANCE_FOOTER_FORMAT = {
     'voting_eligible_accounts_count': 'I',
     'harvesting_eligible_accounts_count': 'Q',
     'total_voting_balance': 'Q',
-    'previous_importance_block_hash': '32s'
-}
+    'previous_importance_block_hash': '32s'}
 
 IMPORTANCE_FOOTER_LEN = 52
 
@@ -69,8 +65,7 @@ TX_H_FORMAT = {
     'network': 'B',
     'type': '2s',
     'max_fee': 'Q',
-    'deadline': 'Q',
-}
+    'deadline': 'Q',}
 
 TX_H_LEN = 128
 
@@ -82,8 +77,7 @@ EMBED_TX_H_FORMAT = {
     'reserved_2': 'I',
     'version': 'B',
     'network': 'B',
-    'type': '2s',
-}
+    'type': '2s',}
 
 EMBED_TX_H_LEN = 48
 
@@ -97,8 +91,35 @@ SUBCACHE_MERKLE_ROOT_FORMAT = {
     'secret_lock_info': '32s',
     'account_restriction': '32s',
     'mosaic_restriction': '32s',
-    'metadata': '32s'
-}
+    'metadata': '32s'}
+
+
+TX_TYPE_MAP = {
+    b'414c': 'Account Key Link',
+    b'424c': 'Node Key Link',
+    b'4141': 'Aggregate Complete',
+    b'4241': 'Aggregate Bonded',
+    b'4143': 'Voting Key Link',
+    b'4243': 'Vrf Key Link',
+    b'414d': 'Mosaic Definition',
+    b'424d': 'Mosaic Supply Change',
+    b'414e': 'Namespace Registration',
+    b'424e': 'Address Alias',
+    b'434e': 'Mosaic Alias',
+    b'4144': 'Account Metadata',
+    b'4244': 'Mosaic Metadata',
+    b'4344': 'Namespace Metadata',
+    b'4155': 'Multisig Account Modification',
+    b'4148': 'Hash Lock',
+    b'4152': 'Secret Lock',
+    b'4252': 'Secret Proof',
+    b'4150': 'Account Address Restriction',
+    b'4250': 'Account Mosaic Restriction',
+    b'4350': 'Account Operation Restriction',
+    b'4151': 'Mosaic Global Restriction',
+    b'4251': 'Mosaic Address Restriction',
+    b'4154': 'Transfer'}
+
 
 
 def fmt_unpack(buffer,struct_format):
@@ -273,7 +294,7 @@ def deserialize_payload(payload_data,payload_type):
     elif payload_type == b'4243': #VrfKeyLinkTransaction
         schema = {
             'linked_public_key' : '32s',
-            'linked_action' : 'B'
+            'link_action' : 'B'
         }
         payload = fmt_unpack(payload_data,schema)
     
@@ -504,10 +525,13 @@ def deserialize_payload(payload_data,payload_type):
         }
         payload = fmt_unpack(payload_data[:32],schema)
         i = 32
-        if payload['mosaics_count'] > 0:
-            payload['mosaics'] = struct.unpack('<' + 'Q'*payload['mosaics_count'], payload_data[i:i+payload['mosaics_count']*8])
-            i += payload['mosaics_count']*8
-        else: payload['mosaics'] = []
+        payload['mosaics'] = []
+        for i in range(payload['mosaics_count']):
+            mosaic = {}
+            mosaic['mosaic_id'] = struct.unpack('<Q',payload_data[i:i+8])[0]
+            mosaic['amount'] = struct.unpack('<Q',payload_data[i+8:i+16])[0]
+            payload['mosaics'].append(mosaic)
+            i += 16
         payload['message'] = payload_data[i:]
     
     else:
@@ -538,11 +562,13 @@ if __name__ == "__main__":
 
     block_paths = glob.glob(os.path.join(args.block_dir,'**','*'+args.block_extension),recursive=True)
     block_format_pattern = re.compile('[0-9]{5}'+args.block_extension)
-    block_paths = sorted(list(filter(lambda x: block_format_pattern.match(os.path.basename(x)),block_paths)))
+    block_paths = tqdm(sorted(list(filter(lambda x: block_format_pattern.match(os.path.basename(x)),block_paths))))
 
     blocks = []
-    for path in tqdm(block_paths):
+    for path in block_paths:
         
+        block_paths.set_description(f"processing file: {path}")
+
         with open(path,mode='rb') as f:
             blk_data = f.read()
         
