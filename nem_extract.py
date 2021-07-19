@@ -121,6 +121,29 @@ TX_TYPE_MAP = {
     b'4154': 'Transfer'}
 
 
+TX_HASH_FORMAT = {
+    'entity_hash': '32s',
+    'merkle_component_hash': '32s'}
+
+TX_HASH_LEN = 64
+
+
+TX_STATEMENT_FORMAT = {
+    'size': 'I',
+    'version': 'H',
+    'type': '2s',
+    'receipt_source_primary': 'I',
+    'receipt_source_secondary': 'I' }
+
+TX_STATEMENT_LEN = 16
+
+
+RECEIPT_FORMAT = {
+    'size': 'I',
+    'version': 'H',
+    'type': '2s'}
+
+RECEIPT_LEN = 8
 
 def fmt_unpack(buffer,struct_format):
     """Helper function to unpack buffers based on static format spec"""
@@ -196,7 +219,7 @@ def deserialize_footer(footer_data,header):
         tx_header['signature'] = hexlify(tx_header['signature'])
         tx_header['signer_public_key'] = hexlify(tx_header['signer_public_key'])
         tx_header['type'] = hexlify(tx_header['type'][::-1])
-        tx_header['payload'] = deserialize_payload(footer_data[i+TX_H_LEN:i+tx_header['size']],tx_header['type'])
+        tx_header['payload'] = deserialize_tx_payload(footer_data[i+TX_H_LEN:i+tx_header['size']],tx_header['type'])
         tx_data.append(tx_header)
         
         total_fee += min(tx_header['max_fee'],tx_header['size'] * header['fee_multiplier'])
@@ -212,7 +235,7 @@ def deserialize_footer(footer_data,header):
     return footer
 
 
-def deserialize_payload(payload_data,payload_type):
+def deserialize_tx_payload(payload_data,payload_type):
     """Produce a nested python dict from a raw xym statemet payload"""
 
     i = 0
@@ -232,7 +255,7 @@ def deserialize_payload(payload_data,payload_type):
         }
         payload = fmt_unpack(payload_data,schema)
     
-    # Aggregate 	  	 
+    # Aggregate            
     elif payload_type == b'4141': #AggregateCompleteTransaction
         schema = {
             'transactions_hash' : '32s',
@@ -248,7 +271,7 @@ def deserialize_payload(payload_data,payload_type):
             e_tx_header['id'] = e_tx_count + 1 #tx ids are 1-based
             e_tx_header['signer_public_key'] = hexlify(e_tx_header['signer_public_key'])
             e_tx_header['type'] = hexlify(e_tx_header['type'][::-1])
-            e_tx_header['payload'] = deserialize_payload(payload_data[i+EMBED_TX_H_LEN:i+e_tx_header['size']],e_tx_header['type'])
+            e_tx_header['payload'] = deserialize_tx_payload(payload_data[i+EMBED_TX_H_LEN:i+e_tx_header['size']],e_tx_header['type'])
             e_tx_data.append(e_tx_header)
             e_tx_count += 1 
             i += e_tx_header['size'] + (8 - e_tx_header['size']) %8
@@ -272,7 +295,7 @@ def deserialize_payload(payload_data,payload_type):
             e_tx_header['id'] = e_tx_count + 1 #tx ids are 1-based
             e_tx_header['signer_public_key'] = hexlify(e_tx_header['signer_public_key'])
             e_tx_header['type'] = hexlify(e_tx_header['type'][::-1])
-            e_tx_header['payload'] = deserialize_payload(payload_data[i+EMBED_TX_H_LEN:i+e_tx_header['size']],e_tx_header['type'])
+            e_tx_header['payload'] = deserialize_tx_payload(payload_data[i+EMBED_TX_H_LEN:i+e_tx_header['size']],e_tx_header['type'])
             e_tx_data.append(e_tx_header)
             e_tx_count += 1 
             i += e_tx_header['size'] + (8 - e_tx_header['size']) %8
@@ -281,7 +304,7 @@ def deserialize_payload(payload_data,payload_type):
         payload['embedded_transactions'] = e_tx_data
         payload['cosignatures'] = payload_data[i:]          
     
-    #Core 	  	 
+    #Core            
     elif payload_type == b'4143': #VotingKeyLinkTransaction
         schema = {
             'linked_public_key' : '32s',
@@ -298,7 +321,7 @@ def deserialize_payload(payload_data,payload_type):
         }
         payload = fmt_unpack(payload_data,schema)
     
-    #Mosaic 	  	 
+    #Mosaic            
     elif payload_type == b'414d': #MosaicDefinitionTransaction
         schema = {
             'id' : 'Q',
@@ -317,7 +340,7 @@ def deserialize_payload(payload_data,payload_type):
         }
         payload = fmt_unpack(payload_data,schema)
     
-    #Namespace 	  	 
+    #Namespace            
     elif payload_type == b'414e': #NamespaceRegistrationTransaction
         schema = {
             'identifier' : 'Q',
@@ -351,7 +374,7 @@ def deserialize_payload(payload_data,payload_type):
         }
         payload = fmt_unpack(payload_data,schema)
     
-    #Metadata 	  	 
+    #Metadata            
     elif payload_type == b'4144': #AccountMetadataTransaction
         schema = {
             'target_address' : '24s',
@@ -384,7 +407,7 @@ def deserialize_payload(payload_data,payload_type):
         payload = fmt_unpack(payload_data[:44],schema)
         payload['value'] = payload_data[44:]
     
-    #Multisignature 	  	 
+    #Multisignature            
     elif payload_type == b'4155': #MultisigAccountModificationTransaction
         schema = {
             'min_removal_delta' : 'B',
@@ -404,7 +427,7 @@ def deserialize_payload(payload_data,payload_type):
             payload['address_deletions'] = struct.unpack('<' + '24s'*payload['address_deletions_count'], payload_data[i:i+payload['address_deletions_count']*24])
         else: payload['address_deletions'] = []
     
-    #Hash Lock 	  	 
+    #Hash Lock            
     elif payload_type == b'4148': #HashLockTransaction
         schema = {
             'reserved_1' : '8s', # NOT in the schema but shows up in the data ?!?
@@ -414,7 +437,7 @@ def deserialize_payload(payload_data,payload_type):
         }
         payload = fmt_unpack(payload_data,schema)
     
-    #Secret Lock 	  	 
+    #Secret Lock            
     elif payload_type == b'4152': #SecretLockTransaction
         schema = {
             'recipient_address' : '24s',
@@ -436,7 +459,7 @@ def deserialize_payload(payload_data,payload_type):
         payload = fmt_unpack(payload_data[:59],schema)
         payload['proof'] = payload_data[59:]
     
-    #Account restriction 	  	 
+    #Account restriction            
     elif payload_type == b'4150': #AccountAddressRestrictionTransaction
         schema = {
             'restriction_type' : 'H',
@@ -491,7 +514,7 @@ def deserialize_payload(payload_data,payload_type):
             payload['restriction_deletions'] = struct.unpack('<' + '2s'*payload['restriction_deletions_count'], payload_data[i:i+payload['restriction_deletions_count']*24])
         else: payload['restriction_deletions'] = []
     
-    #Mosaic restriction 	  	 
+    #Mosaic restriction            
     elif payload_type == b'4151': #MosaicGlobalRestrictionTransaction
         schema = {
             'mosaic_id' : 'Q',
@@ -514,7 +537,7 @@ def deserialize_payload(payload_data,payload_type):
         }
         payload = fmt_unpack(payload_data,schema)
     
-    #Transfer 	  	 
+    #Transfer            
     elif payload_type == b'4154': #TransferTransaction
         schema = {
             'recipient_address' : '24s',
@@ -535,9 +558,68 @@ def deserialize_payload(payload_data,payload_type):
         payload['message'] = payload_data[i:]
     
     else:
-        raise ValueError(f"Unknown Tx Payload Type Encountered: {payload_type}")
+        raise ValueError(f"Unknown Tx payload type encountered: {payload_type}")
 
     return payload
+
+
+def deserialize_receipt_payload(payload_data,payload_type):
+    """Produce a nested python dict from a raw receipt payload"""
+    
+    if payload_type == b'0000': # reserved receipt
+        pass
+
+    elif payload_type == b'124D': # mosaic rental fee receipt
+        pass
+
+    elif payload_type == b'134E': # namespace rental fee receipt
+        pass
+
+    elif payload_type == b'2143': # harvest fee receipt
+        pass
+
+    elif payload_type == b'2248': # lock hash completed receipt
+        pass
+
+    elif payload_type == b'2348': # lock hash expired receipt
+        pass
+
+    elif payload_type == b'2252': # lock secret completed receipt
+        pass
+
+    elif payload_type == b'2352': # lock secret expired receipt
+        pass
+
+    elif payload_type == b'3148': # lock hash created receipt
+        pass
+
+    elif payload_type == b'3152': # lock secret created receipt
+        pass
+
+    elif payload_type == b'414D': # mosaic expired receipt
+        pass
+
+    elif payload_type == b'414E': # namespace expired receipt
+        pass
+
+    elif payload_type == b'424E': # namespace deleted receipt
+        pass
+
+    elif payload_type == b'5143': # inflation receipt
+        pass
+
+    elif payload_type == b'E143': # transaction group receipt
+        pass
+
+    elif payload_type == b'F143': # address alias resolution receipt
+        pass
+
+    elif payload_type == b'F243': # mosaic alias resolution receipt
+        pass
+
+    else:
+        raise ValueError(f"Unknown receipt payload type encountered: {payload_type}")
+
 
 def get_block_stats(block):
     """Extract basic summary data and flatten for tabular manipulation"""
@@ -555,7 +637,8 @@ if __name__ == "__main__":
     parser.add_argument("--full_save_path", type=str, default='./block_data.pkl', help="path to write the extracted data to")
     parser.add_argument("--header_save_path", type=str, default='./block_header_df.pkl', help="path to write the extracted data to")
     parser.add_argument("--block_extension", type=str, default='.dat', help="extension of block files; must be unique")
-    parser.add_argument("--db_offset_bytes", type=int, default=800, help="padding bytes between blocks")
+    parser.add_argument("--statement_extension", type=str, default='.stmt', help="extension of block files; must be unique")
+    parser.add_argument("--db_offset_bytes", type=int, default=800, help="padding bytes at start of storage files")
     parser.add_argument("--save_tx_hashes", action='store_true', help="flag to keep full tx hashes")
     parser.add_argument("--save_subcache_merkle_roots", action='store_true', help="flag to keep subcache merkle roots")
     args = parser.parse_args()
@@ -567,7 +650,7 @@ if __name__ == "__main__":
     blocks = []
     for path in block_paths:
         
-        block_paths.set_description(f"processing file: {path}")
+        block_paths.set_description(f"processing block file: {path}")
 
         with open(path,mode='rb') as f:
             blk_data = f.read()
@@ -584,12 +667,16 @@ if __name__ == "__main__":
             i += 64
 
             # get transaction hashes
-            tx_hash_len = struct.unpack('I',blk_data[i:i+4])[0] * 2 * 32
+            num_tx_hashes = struct.unpack('I',blk_data[i:i+4])[0]
             i += 4
             tx_hashes = None
             if args.save_tx_hashes:
-                raise NotImplementedError('tx hash saving not implemented yet!')
-            i += tx_hash_len
+                tx_hashes = []
+                for _ in range(num_tx_hashes):
+                    tx_hashes.append(fmt_unpack(blk_data[i:i+TX_HASH_LEN],TX_HASH_FORMAT))
+                    i += TX_HASH_LEN
+            else:    
+                i += num_tx_hashes * TX_HASH_LEN
 
             # get sub cache merkle roots
             root_hash_len = struct.unpack('I',blk_data[i:i+4])[0] * 32
@@ -607,7 +694,38 @@ if __name__ == "__main__":
                 'subcache_merkle_roots':merkle_roots
             })
 
-    print("data extraction complete!\n")
+    print("block data extraction complete!\n")
+
+    statement_paths = glob.glob(os.path.join(args.block_dir,'**','*'+args.statement_extension),recursive=True)
+    statement_format_pattern = re.compile('[0-9]{5}'+args.statement_extension)
+    statement_paths = tqdm(sorted(list(filter(lambda x: statement_format_pattern.match(os.path.basename(x)),statement_paths))))
+
+    statements = []
+    for path in statement_paths:
+
+        statement_paths.set_description(f"processing statement file: {path}")
+
+        with open(path,mode='rb') as f:
+            stmt_data = f.read()
+        
+        i = args.db_offset_bytes
+
+        while i < len(stmt_data):
+
+            size, version, st_type = struct.unpack("<IH2s",stmt_data[i:i+8])
+            if size < 1:
+                raise ValueError("improper size!")
+            payload = stmt_data[i+8:i+size]
+            i += size            
+
+            statements.append({
+                'size': size,
+                'version': version,
+                'type': st_type,
+                'payload': payload
+            })  
+
+    print("statement data extraction complete!\n")
 
     with open(args.full_save_path, 'wb') as file:
         pickle.dump(blocks,file)
