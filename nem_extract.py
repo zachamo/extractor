@@ -128,14 +128,12 @@ TX_HASH_FORMAT = {
 TX_HASH_LEN = 64
 
 
-TX_STATEMENT_FORMAT = {
-    'size': 'I',
-    'version': 'H',
-    'type': '2s',
-    'receipt_source_primary': 'I',
-    'receipt_source_secondary': 'I' }
+RECEIPT_SOURCE_FORMAT = {
+    'primary_id': 'I',
+    'secondary_id': 'I'
+}
 
-TX_STATEMENT_LEN = 16
+RECEIPT_SOURCE_LEN = 8
 
 
 RECEIPT_FORMAT = {
@@ -144,6 +142,23 @@ RECEIPT_FORMAT = {
     'type': '2s'}
 
 RECEIPT_LEN = 8
+
+
+ADDRESS_RESOLUTION_FORMAT = {
+    'primary_id': 'I',
+    'secondary_id': 'I',
+    'resolved': '24s' }
+
+ADDRESS_RESOLUTION_LEN = 24 + 8
+
+
+MOSAIC_RESOLUTION_FORMAT = {
+    'primary_id': 'I',
+    'secondary_id': 'I',
+    'resolved': 'Q' }
+
+MOSAIC_RESOLUTION_LEN = 8 + 8
+
 
 def fmt_unpack(buffer,struct_format):
     """Helper function to unpack buffers based on static format spec"""
@@ -630,6 +645,80 @@ def get_block_stats(block):
     return data
 
 
+def read_transaction_statements(stmt_data, i):
+    count = struct.unpack("<I", stmt_data[i:i+4])
+    i += 4
+
+    statements = []
+    for j in range(count[0]):
+        receipt_source = fmt_unpack(stmt_data[i:i + RECEIPT_SOURCE_LEN], RECEIPT_SOURCE_FORMAT)
+        i += RECEIPT_SOURCE_LEN
+
+        receipt_count = struct.unpack("<I", stmt_data[i:i+4])
+        i += 4
+
+        statement = { 'receipt_source': receipt_source, 'receipts': [] }
+        for k in range(receipt_count[0]):
+            receipt = fmt_unpack(stmt_data[i:i + RECEIPT_LEN], RECEIPT_FORMAT)
+            i += RECEIPT_LEN
+
+            payload_size = receipt['size'] - 8
+            receipt['payload'] = struct.unpack('{}s'.format(payload_size), stmt_data[i:i + payload_size])
+            i += payload_size
+
+            statement['receipts'].append(receipt)
+
+        statements.append(statement)
+
+    return i, statements
+
+
+def read_address_resolution_statements(stmt_data, i):
+    count = struct.unpack("<I", stmt_data[i:i+4])
+    i += 4
+
+    statements = []
+    for j in range(count[0]):
+        key = struct.unpack('24s', stmt_data[i:i+24])
+        i += 24
+
+        resolution_count = struct.unpack("<I", stmt_data[i:i+4])
+        i += 4
+
+        statement = { 'key': key[0], 'resolutions': [] }
+        for k in range(resolution_count[0]):
+            address_resolution = fmt_unpack(stmt_data[i:i + ADDRESS_RESOLUTION_LEN], ADDRESS_RESOLUTION_FORMAT)
+            i += ADDRESS_RESOLUTION_LEN
+            statement['resolutions'].append(address_resolution)
+
+        statements.append(statement)
+
+    return i, statements
+
+
+def read_mosaic_resolution_statements(stmt_data, i):
+    count = struct.unpack("<I", stmt_data[i:i+4])
+    i += 4
+
+    statements = []
+    for j in range(count[0]):
+        key = struct.unpack('<Q', stmt_data[i:i+8])
+        i += 8
+
+        resolution_count = struct.unpack("<I", stmt_data[i:i+4])
+        i += 4
+
+        statement = { 'key': key[0], 'resolutions': [] }
+        for k in range(resolution_count[0]):
+            mosaic_resolution = fmt_unpack(stmt_data[i:i + MOSAIC_RESOLUTION_LEN], MOSAIC_RESOLUTION_FORMAT)
+            i += MOSAIC_RESOLUTION_LEN
+            statement['resolutions'].append(mosaic_resolution)
+
+        statements.append(statement)
+
+    return i, statements
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -711,19 +800,9 @@ if __name__ == "__main__":
         i = args.db_offset_bytes
 
         while i < len(stmt_data):
-
-            size, version, st_type = struct.unpack("<IH2s",stmt_data[i:i+8])
-            if size < 1:
-                raise ValueError("improper size!")
-            payload = stmt_data[i+8:i+size]
-            i += size            
-
-            statements.append({
-                'size': size,
-                'version': version,
-                'type': st_type,
-                'payload': payload
-            })  
+            i, transaction_statements = read_transaction_statements(stmt_data, i)
+            i, address_resolution_statements = read_address_resolution_statements(stmt_data, i)
+            i, mosaic_resolution_statements = read_mosaic_resolution_statements(stmt_data, i)
 
     print("statement data extraction complete!\n")
 
