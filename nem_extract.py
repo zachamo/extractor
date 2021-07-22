@@ -139,7 +139,7 @@ RECEIPT_SOURCE_LEN = 8
 RECEIPT_FORMAT = {
     'size': 'I',
     'version': 'H',
-    'type': '2s'}
+    'type': 'H'}
 
 RECEIPT_LEN = 8
 
@@ -398,6 +398,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'value_size': 'H',
         }
         payload = fmt_unpack(payload_data[:36],schema)
+        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
         payload['value'] = payload_data[36:]
     
     elif payload_type == b'4244': #MosaicMetadataTransaction
@@ -409,6 +410,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'value_size': 'H',
         }
         payload = fmt_unpack(payload_data[:44],schema)
+        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
         payload['value'] = payload_data[44:]
     
     elif payload_type == b'4344': #NamespaceMetadataTransaction
@@ -420,6 +422,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'value_size': 'H',
         }
         payload = fmt_unpack(payload_data[:44],schema)
+        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
         payload['value'] = payload_data[44:]
     
     #Multisignature            
@@ -463,6 +466,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'hash_algorithm' : 'B'
         }
         payload = fmt_unpack(payload_data,schema)
+        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
     
     elif payload_type == b'4252': #SecretProofTransaction
         schema = {
@@ -472,6 +476,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'hash_algorithm' : 'B',
         }
         payload = fmt_unpack(payload_data[:59],schema)
+        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
         payload['proof'] = payload_data[59:]
     
     #Account restriction            
@@ -551,6 +556,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'target_address' : '24s'
         }
         payload = fmt_unpack(payload_data,schema)
+        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
     
     #Transfer            
     elif payload_type == b'4154': #TransferTransaction
@@ -564,13 +570,14 @@ def deserialize_tx_payload(payload_data,payload_type):
         payload = fmt_unpack(payload_data[:32],schema)
         i = 32
         payload['mosaics'] = []
-        for i in range(payload['mosaics_count']):
+        for _ in range(payload['mosaics_count']):
             mosaic = {}
             mosaic['mosaic_id'] = struct.unpack('<Q',payload_data[i:i+8])[0]
             mosaic['amount'] = struct.unpack('<Q',payload_data[i+8:i+16])[0]
             payload['mosaics'].append(mosaic)
             i += 16
-        payload['message'] = payload_data[i:]
+        payload['message'] = payload_data[-payload['message_size']:]
+        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
     
     else:
         raise ValueError(f"Unknown Tx payload type encountered: {payload_type}")
@@ -578,62 +585,116 @@ def deserialize_tx_payload(payload_data,payload_type):
     return payload
 
 
-def deserialize_receipt_payload(payload_data,payload_type):
+def deserialize_receipt_payload(payload_data,receipt_type):
     """Produce a nested python dict from a raw receipt payload"""
     
-    if payload_type == b'0000': # reserved receipt
-        pass
+    if receipt_type == 0x0000: # reserved receipt
+        payload = None
 
-    elif payload_type == b'124D': # mosaic rental fee receipt
-        pass
+    elif receipt_type == 0x124D: # mosaic rental fee receipt
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+            'sender_address' : '24s',
+            'recipient_address' : '24s'
+        }
+        payload = fmt_unpack(payload_data,schema)
+        payload['sender_address'] = base64.b32encode(payload['sender_address']+bytes(0)).decode('utf8')[:-1]
+        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
 
-    elif payload_type == b'134E': # namespace rental fee receipt
-        pass
+    elif receipt_type == 0x134E: # namespace rental fee receipt
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+            'sender_address' : '24s',
+            'recipient_address' : '24s'
+        }
+        payload = fmt_unpack(payload_data,schema)
+        payload['sender_address'] = base64.b32encode(payload['sender_address']+bytes(0)).decode('utf8')[:-1]
+        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
 
-    elif payload_type == b'2143': # harvest fee receipt
-        pass
+    elif receipt_type == 0x2143: # harvest fee receipt
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+            'target_address' : '24s',
+        }
+        payload = fmt_unpack(payload_data,schema)
+        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
 
-    elif payload_type == b'2248': # lock hash completed receipt
-        pass
 
-    elif payload_type == b'2348': # lock hash expired receipt
-        pass
+    # TODO: missing documentation on format for lock creation/completion/expiry receipts - based on lock transactions?
 
-    elif payload_type == b'2252': # lock secret completed receipt
-        pass
+    elif receipt_type == 0x2248: # lock hash completed receipt
+        payload = None
 
-    elif payload_type == b'2352': # lock secret expired receipt
-        pass
+    elif receipt_type == 0x2348: # lock hash expired receipt
+        payload = None
 
-    elif payload_type == b'3148': # lock hash created receipt
-        pass
+    elif receipt_type == 0x2252: # lock secret completed receipt
+        payload = None
 
-    elif payload_type == b'3152': # lock secret created receipt
-        pass
+    elif receipt_type == 0x2352: # lock secret expired receipt
+        payload = None
 
-    elif payload_type == b'414D': # mosaic expired receipt
-        pass
+    elif receipt_type == 0x3148: # lock hash created receipt
+        payload = None
 
-    elif payload_type == b'414E': # namespace expired receipt
-        pass
+    elif receipt_type == 0x3152: # lock secret created receipt
+        payload = None
 
-    elif payload_type == b'424E': # namespace deleted receipt
-        pass
+    elif receipt_type == 0x414D: # mosaic expired receipt
+        schema = {
+            'mosaic_id' : 'Q'
+        }
+        payload = fmt_unpack(payload_data,schema)
 
-    elif payload_type == b'5143': # inflation receipt
-        pass
+    elif receipt_type == 0x414E: # namespace expired receipt
+        schema = {
+            'mosaic_id' : 'Q'
+        }
+        payload = fmt_unpack(payload_data,schema)
 
-    elif payload_type == b'E143': # transaction group receipt
-        pass
 
-    elif payload_type == b'F143': # address alias resolution receipt
-        pass
+    elif receipt_type == 0x424E: # namespace deleted receipt
+        schema = {
+            'mosaic_id' : 'Q'
+        }
+        payload = fmt_unpack(payload_data,schema)
 
-    elif payload_type == b'F243': # mosaic alias resolution receipt
-        pass
+
+    elif receipt_type == 0x5143: # inflation receipt
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+        }
+        payload = fmt_unpack(payload_data,schema)
+
+    elif receipt_type == 0xE143: # transaction group receipt
+        receipt_source = fmt_unpack(payload_data[:RECEIPT_SOURCE_LEN], RECEIPT_SOURCE_FORMAT)
+        i = RECEIPT_SOURCE_LEN
+
+        receipt_count = struct.unpack("<I", payload_data[i:i+4])[0]
+        i += 4
+
+        payload = {'receipt_source': receipt_source, 'receipts': [] }
+        for k in range(receipt_count):
+            receipt = fmt_unpack(payload_data[i:i + RECEIPT_LEN], RECEIPT_FORMAT)
+            receipt['payload'] = deserialize_receipt_payload(payload_data[i + RECEIPT_LEN:i + receipt['size']],receipt['type'])
+            i += receipt['size']
+
+            payload['receipts'].append(receipt)
+
+    # elif receipt_type == 0xF143: # address alias resolution receipt
+    #     pass
+
+    # elif receipt_type == 0xF243: # mosaic alias resolution receipt
+    #     pass
 
     else:
-        raise ValueError(f"Unknown receipt payload type encountered: {payload_type}")
+        raise ValueError(f"Unknown receipt payload type encountered: {hex(receipt_type)}")
+
+    return payload
 
 
 def get_block_stats(block):
@@ -654,17 +715,14 @@ def read_transaction_statements(stmt_data, i):
         receipt_source = fmt_unpack(stmt_data[i:i + RECEIPT_SOURCE_LEN], RECEIPT_SOURCE_FORMAT)
         i += RECEIPT_SOURCE_LEN
 
-        receipt_count = struct.unpack("<I", stmt_data[i:i+4])
+        receipt_count = struct.unpack("<I", stmt_data[i:i+4])[0]
         i += 4
 
         statement = { 'receipt_source': receipt_source, 'receipts': [] }
-        for k in range(receipt_count[0]):
+        for k in range(receipt_count):
             receipt = fmt_unpack(stmt_data[i:i + RECEIPT_LEN], RECEIPT_FORMAT)
-            i += RECEIPT_LEN
-
-            payload_size = receipt['size'] - 8
-            receipt['payload'] = struct.unpack('{}s'.format(payload_size), stmt_data[i:i + payload_size])
-            i += payload_size
+            receipt['payload'] = deserialize_receipt_payload(stmt_data[i + RECEIPT_LEN:i + receipt['size']],receipt['type'])
+            i += receipt['size']
 
             statement['receipts'].append(receipt)
 
@@ -679,14 +737,14 @@ def read_address_resolution_statements(stmt_data, i):
 
     statements = []
     for j in range(count[0]):
-        key = struct.unpack('24s', stmt_data[i:i+24])
+        key = struct.unpack('24s', stmt_data[i:i+24])[0]
         i += 24
 
-        resolution_count = struct.unpack("<I", stmt_data[i:i+4])
+        resolution_count = struct.unpack("<I", stmt_data[i:i+4])[0]
         i += 4
 
-        statement = { 'key': key[0], 'resolutions': [] }
-        for k in range(resolution_count[0]):
+        statement = { 'key': key, 'resolutions': [] }
+        for k in range(resolution_count):
             address_resolution = fmt_unpack(stmt_data[i:i + ADDRESS_RESOLUTION_LEN], ADDRESS_RESOLUTION_FORMAT)
             i += ADDRESS_RESOLUTION_LEN
             statement['resolutions'].append(address_resolution)
@@ -702,14 +760,14 @@ def read_mosaic_resolution_statements(stmt_data, i):
 
     statements = []
     for j in range(count[0]):
-        key = struct.unpack('<Q', stmt_data[i:i+8])
+        key = struct.unpack('<Q', stmt_data[i:i+8])[0]
         i += 8
 
-        resolution_count = struct.unpack("<I", stmt_data[i:i+4])
+        resolution_count = struct.unpack("<I", stmt_data[i:i+4])[0]
         i += 4
 
-        statement = { 'key': key[0], 'resolutions': [] }
-        for k in range(resolution_count[0]):
+        statement = { 'key': key, 'resolutions': [] }
+        for k in range(resolution_count):
             mosaic_resolution = fmt_unpack(stmt_data[i:i + MOSAIC_RESOLUTION_LEN], MOSAIC_RESOLUTION_FORMAT)
             i += MOSAIC_RESOLUTION_LEN
             statement['resolutions'].append(mosaic_resolution)
@@ -723,7 +781,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--block_dir", type=str, default='./data', help="Location of block store")
-    parser.add_argument("--full_save_path", type=str, default='./block_data.pkl', help="path to write the extracted data to")
+    parser.add_argument("--block_save_path", type=str, default='./block_data.pkl', help="path to write the extracted block data to")
+    parser.add_argument("--statement_save_path", type=str, default='./stmt_data.pkl', help="path to write the extracted statement data to")
     parser.add_argument("--header_save_path", type=str, default='./block_header_df.pkl', help="path to write the extracted data to")
     parser.add_argument("--block_extension", type=str, default='.dat', help="extension of block files; must be unique")
     parser.add_argument("--statement_extension", type=str, default='.stmt', help="extension of block files; must be unique")
@@ -789,7 +848,14 @@ if __name__ == "__main__":
     statement_format_pattern = re.compile('[0-9]{5}'+args.statement_extension)
     statement_paths = tqdm(sorted(list(filter(lambda x: statement_format_pattern.match(os.path.basename(x)),statement_paths))))
 
-    statements = []
+    statements = {
+        'transaction_statements':{},
+        'address_resolution_statements': {},
+        'mosaic_resolution_statements': {}
+    }
+
+    stmt_height = 0
+    
     for path in statement_paths:
 
         statement_paths.set_description(f"processing statement file: {path}")
@@ -804,12 +870,19 @@ if __name__ == "__main__":
             i, address_resolution_statements = read_address_resolution_statements(stmt_data, i)
             i, mosaic_resolution_statements = read_mosaic_resolution_statements(stmt_data, i)
 
+            stmt_height += 1
+            statements['transaction_statements'][stmt_height] = transaction_statements
+            statements['address_resolution_statements'][stmt_height] = address_resolution_statements
+            statements['mosaic_resolution_statements'][stmt_height] = mosaic_resolution_statements
+        
     print("statement data extraction complete!\n")
 
-    with open(args.full_save_path, 'wb') as file:
+
+
+    with open(args.block_save_path, 'wb') as file:
         pickle.dump(blocks,file)
 
-    print(f"full data written to {args.full_save_path}")
+    print(f"block data written to {args.block_save_path}")
 
     header_df = pd.DataFrame.from_records([get_block_stats(x) for x in blocks])
     header_df['dateTime'] = pd.to_datetime(header_df['timestamp'],origin=pd.to_datetime('2021-03-16 00:06:25'),unit='ms')
@@ -817,4 +890,9 @@ if __name__ == "__main__":
     header_df.to_pickle(args.header_save_path)
 
     print(f"header data written to {args.header_save_path}")
+
+    with open(args.statement_save_path, 'wb') as file:
+        pickle.dump(statements,file)
+
+    print(f"statement data written to {args.statement_save_path}")
     print("exiting . . .")
