@@ -1,21 +1,22 @@
 """NEM Extractor Script"""
 
 import argparse
-import os
+import base64
 import glob
-import struct
-import tqdm
+import hashlib
+import numpy as np
+import os
 import pandas as pd
 import pdb
 import pickle
 import re
-import hashlib
-import base64
-from tqdm import tqdm
+import struct
+import tqdm
 from binascii import hexlify, unhexlify
+from collections import defaultdict
+from tqdm import tqdm
 
-
-# describe the structure of block entity bytes for unpacking
+# describe the fixed structure of block entity bytes for unpacking
 
 HEADER_FORMAT = {
     'size': 'I',
@@ -94,33 +95,6 @@ SUBCACHE_MERKLE_ROOT_FORMAT = {
     'metadata': '32s'}
 
 
-TX_TYPE_MAP = {
-    b'414c': 'Account Key Link',
-    b'424c': 'Node Key Link',
-    b'4141': 'Aggregate Complete',
-    b'4241': 'Aggregate Bonded',
-    b'4143': 'Voting Key Link',
-    b'4243': 'Vrf Key Link',
-    b'414d': 'Mosaic Definition',
-    b'424d': 'Mosaic Supply Change',
-    b'414e': 'Namespace Registration',
-    b'424e': 'Address Alias',
-    b'434e': 'Mosaic Alias',
-    b'4144': 'Account Metadata',
-    b'4244': 'Mosaic Metadata',
-    b'4344': 'Namespace Metadata',
-    b'4155': 'Multisig Account Modification',
-    b'4148': 'Hash Lock',
-    b'4152': 'Secret Lock',
-    b'4252': 'Secret Proof',
-    b'4150': 'Account Address Restriction',
-    b'4250': 'Account Mosaic Restriction',
-    b'4350': 'Account Operation Restriction',
-    b'4151': 'Mosaic Global Restriction',
-    b'4251': 'Mosaic Address Restriction',
-    b'4154': 'Transfer'}
-
-
 TX_HASH_FORMAT = {
     'entity_hash': '32s',
     'merkle_component_hash': '32s'}
@@ -160,6 +134,34 @@ MOSAIC_RESOLUTION_FORMAT = {
 MOSAIC_RESOLUTION_LEN = 8 + 8
 
 
+TX_NAME_MAP = {
+    b'414c': 'Account Key Link',
+    b'424c': 'Node Key Link',
+    b'4141': 'Aggregate Complete',
+    b'4241': 'Aggregate Bonded',
+    b'4143': 'Voting Key Link',
+    b'4243': 'Vrf Key Link',
+    b'414d': 'Mosaic Definition',
+    b'424d': 'Mosaic Supply Change',
+    b'414e': 'Namespace Registration',
+    b'424e': 'Address Alias',
+    b'434e': 'Mosaic Alias',
+    b'4144': 'Account Metadata',
+    b'4244': 'Mosaic Metadata',
+    b'4344': 'Namespace Metadata',
+    b'4155': 'Multisig Account Modification',
+    b'4148': 'Hash Lock',
+    b'4152': 'Secret Lock',
+    b'4252': 'Secret Proof',
+    b'4150': 'Account Address Restriction',
+    b'4250': 'Account Mosaic Restriction',
+    b'4350': 'Account Operation Restriction',
+    b'4151': 'Mosaic Global Restriction',
+    b'4251': 'Mosaic Address Restriction',
+    b'4154': 'Transfer'}
+
+
+
 def fmt_unpack(buffer,struct_format):
     """Helper function to unpack buffers based on static format spec"""
     return dict(
@@ -168,6 +170,11 @@ def fmt_unpack(buffer,struct_format):
             struct.unpack('<'+''.join(struct_format.values()),buffer)
         )
     )
+
+
+def encode_address(address):
+    """Encode address bytes into base32 with appropriate offset and pad"""
+    return base64.b32encode(address + bytes(0)).decode('utf8')[0:-1]
 
 
 def public_key_to_address(public_key,network=104):
@@ -188,7 +195,7 @@ def public_key_to_address(public_key,network=104):
     
     address = base + checksum
     
-    return base64.b32encode(address + bytes(0)).decode('utf8')[0:-1]
+    return encode_address(address)
 
 
 def deserialize_header(header):
@@ -199,7 +206,7 @@ def deserialize_header(header):
         if k == 'type':
             header[k] = hexlify(header[k][::-1])
         elif k == 'beneficiary_address':
-            header[k] = base64.b32encode(header[k]+bytes(0)).decode('utf8')[0:-1]
+            header[k] = encode_address(header[k])
         elif v[-1] == 's':
             header[k] = hexlify(header[k])
     header['harvester'] = public_key_to_address(unhexlify(header['signer_public_key']))
@@ -210,16 +217,15 @@ def deserialize_footer(footer_data,header):
     """Produce a nested python dict from a raw xym footer blob"""
 
     # parse static footer fields
-    i = 0
     if header['type'] == b'8043': #nemesis
-        footer = fmt_unpack(footer_data[i:i+IMPORTANCE_FOOTER_LEN],IMPORTANCE_FOOTER_FORMAT)
-        i += IMPORTANCE_FOOTER_LEN
+        footer = fmt_unpack(footer_data[:IMPORTANCE_FOOTER_LEN],IMPORTANCE_FOOTER_FORMAT)
+        i = IMPORTANCE_FOOTER_LEN
     elif header['type'] == b'8143': #normal
-        footer = fmt_unpack(footer_data[i:i+FOOTER_LEN],FOOTER_FORMAT)
-        i += FOOTER_LEN
+        footer = fmt_unpack(footer_data[:FOOTER_LEN],FOOTER_FORMAT)
+        i = FOOTER_LEN
     elif header['type'] == b'8243': #importance
-        footer = fmt_unpack(footer_data[i:i+IMPORTANCE_FOOTER_LEN],IMPORTANCE_FOOTER_FORMAT)
-        i += IMPORTANCE_FOOTER_LEN
+        footer = fmt_unpack(footer_data[:IMPORTANCE_FOOTER_LEN],IMPORTANCE_FOOTER_FORMAT)
+        i = IMPORTANCE_FOOTER_LEN
     else:
         raise ValueError(f"Unknown Block Type Encountered: {header['type']}")
         
@@ -252,8 +258,6 @@ def deserialize_footer(footer_data,header):
 
 def deserialize_tx_payload(payload_data,payload_type):
     """Produce a nested python dict from a raw xym statemet payload"""
-
-    i = 0
 
     #Account Link
     if payload_type == b'414c': #AccountKeyLinkTransaction
@@ -398,7 +402,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'value_size': 'H',
         }
         payload = fmt_unpack(payload_data[:36],schema)
-        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
+        payload['target_address'] = encode_address(payload['target_address'])
         payload['value'] = payload_data[36:]
     
     elif payload_type == b'4244': #MosaicMetadataTransaction
@@ -410,7 +414,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'value_size': 'H',
         }
         payload = fmt_unpack(payload_data[:44],schema)
-        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
+        payload['target_address'] = encode_address(payload['target_address'])
         payload['value'] = payload_data[44:]
     
     elif payload_type == b'4344': #NamespaceMetadataTransaction
@@ -422,7 +426,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'value_size': 'H',
         }
         payload = fmt_unpack(payload_data[:44],schema)
-        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
+        payload['target_address'] = encode_address(payload['target_address'])
         payload['value'] = payload_data[44:]
     
     #Multisignature            
@@ -466,7 +470,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'hash_algorithm' : 'B'
         }
         payload = fmt_unpack(payload_data,schema)
-        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
+        payload['recipient_address'] = encode_address(payload['recipient_address'])
     
     elif payload_type == b'4252': #SecretProofTransaction
         schema = {
@@ -476,7 +480,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'hash_algorithm' : 'B',
         }
         payload = fmt_unpack(payload_data[:59],schema)
-        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
+        payload['recipient_address'] = encode_address(payload['recipient_address'])
         payload['proof'] = payload_data[59:]
     
     #Account restriction            
@@ -556,7 +560,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             'target_address' : '24s'
         }
         payload = fmt_unpack(payload_data,schema)
-        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
+        payload['target_address'] = encode_address(payload['target_address'])
     
     #Transfer            
     elif payload_type == b'4154': #TransferTransaction
@@ -577,7 +581,7 @@ def deserialize_tx_payload(payload_data,payload_type):
             payload['mosaics'].append(mosaic)
             i += 16
         payload['message'] = payload_data[-payload['message_size']:]
-        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
+        payload['recipient_address'] = encode_address(payload['recipient_address'])
     
     else:
         raise ValueError(f"Unknown Tx payload type encountered: {payload_type}")
@@ -599,8 +603,8 @@ def deserialize_receipt_payload(payload_data,receipt_type):
             'recipient_address' : '24s'
         }
         payload = fmt_unpack(payload_data,schema)
-        payload['sender_address'] = base64.b32encode(payload['sender_address']+bytes(0)).decode('utf8')[:-1]
-        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
+        payload['sender_address'] = encode_address(payload['sender_address'])
+        payload['recipient_address'] = encode_address(payload['recipient_address'])
 
     elif receipt_type == 0x134E: # namespace rental fee receipt
         schema = {
@@ -610,8 +614,8 @@ def deserialize_receipt_payload(payload_data,receipt_type):
             'recipient_address' : '24s'
         }
         payload = fmt_unpack(payload_data,schema)
-        payload['sender_address'] = base64.b32encode(payload['sender_address']+bytes(0)).decode('utf8')[:-1]
-        payload['recipient_address'] = base64.b32encode(payload['recipient_address']+bytes(0)).decode('utf8')[:-1]
+        payload['sender_address'] = encode_address(payload['sender_address'])
+        payload['recipient_address'] = encode_address(payload['recipient_address'])
 
     elif receipt_type == 0x2143: # harvest fee receipt
         schema = {
@@ -620,28 +624,61 @@ def deserialize_receipt_payload(payload_data,receipt_type):
             'target_address' : '24s',
         }
         payload = fmt_unpack(payload_data,schema)
-        payload['target_address'] = base64.b32encode(payload['target_address']+bytes(0)).decode('utf8')[:-1]
-
-
-    # TODO: missing documentation on format for lock creation/completion/expiry receipts - based on lock transactions?
+        payload['target_address'] = encode_address(payload['target_address'])
 
     elif receipt_type == 0x2248: # lock hash completed receipt
-        payload = None
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+            'target_address' : '24s',
+        }
+        payload = fmt_unpack(payload_data,schema)
+        payload['target_address'] = encode_address(payload['target_address'])
 
     elif receipt_type == 0x2348: # lock hash expired receipt
-        payload = None
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+            'target_address' : '24s',
+        }
+        payload = fmt_unpack(payload_data,schema)
+        payload['target_address'] = encode_address(payload['target_address'])
 
     elif receipt_type == 0x2252: # lock secret completed receipt
-        payload = None
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+            'target_address' : '24s',
+        }
+        payload = fmt_unpack(payload_data,schema)
+        payload['target_address'] = encode_address(payload['target_address'])
 
     elif receipt_type == 0x2352: # lock secret expired receipt
-        payload = None
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+            'target_address' : '24s',
+        }
+        payload = fmt_unpack(payload_data,schema)
+        payload['target_address'] = encode_address(payload['target_address'])
 
     elif receipt_type == 0x3148: # lock hash created receipt
-        payload = None
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+            'target_address' : '24s',
+        }
+        payload = fmt_unpack(payload_data,schema)
+        payload['target_address'] = encode_address(payload['target_address'])
 
     elif receipt_type == 0x3152: # lock secret created receipt
-        payload = None
+        schema = {
+            'mosaic_id' : 'Q',
+            'amount' : 'Q',
+            'target_address' : '24s',
+        }
+        payload = fmt_unpack(payload_data,schema)
+        payload['target_address'] = encode_address(payload['target_address'])
 
     elif receipt_type == 0x414D: # mosaic expired receipt
         schema = {
@@ -655,13 +692,11 @@ def deserialize_receipt_payload(payload_data,receipt_type):
         }
         payload = fmt_unpack(payload_data,schema)
 
-
     elif receipt_type == 0x424E: # namespace deleted receipt
         schema = {
             'mosaic_id' : 'Q'
         }
         payload = fmt_unpack(payload_data,schema)
-
 
     elif receipt_type == 0x5143: # inflation receipt
         schema = {
@@ -685,28 +720,13 @@ def deserialize_receipt_payload(payload_data,receipt_type):
 
             payload['receipts'].append(receipt)
 
-    # elif receipt_type == 0xF143: # address alias resolution receipt
-    #     pass
-
-    # elif receipt_type == 0xF243: # mosaic alias resolution receipt
-    #     pass
-
     else:
         raise ValueError(f"Unknown receipt payload type encountered: {hex(receipt_type)}")
 
     return payload
 
 
-def get_block_stats(block):
-    """Extract basic summary data and flatten for tabular manipulation"""
-    data = block['header'].copy()
-    data['statement_count'] = block['footer']['statement_count']
-    data['tx_count'] = block['footer']['tx_count']
-    data['total_fee'] = block['footer']['total_fee']
-    return data
-
-
-def read_transaction_statements(stmt_data, i):
+def deserialize_transaction_statements(stmt_data, i):
     count = struct.unpack("<I", stmt_data[i:i+4])
     i += 4
 
@@ -731,7 +751,7 @@ def read_transaction_statements(stmt_data, i):
     return i, statements
 
 
-def read_address_resolution_statements(stmt_data, i):
+def deserialize_address_resolution_statements(stmt_data, i):
     count = struct.unpack("<I", stmt_data[i:i+4])
     i += 4
 
@@ -754,7 +774,7 @@ def read_address_resolution_statements(stmt_data, i):
     return i, statements
 
 
-def read_mosaic_resolution_statements(stmt_data, i):
+def deserialize_mosaic_resolution_statements(stmt_data, i):
     count = struct.unpack("<I", stmt_data[i:i+4])
     i += 4
 
@@ -777,12 +797,84 @@ def read_mosaic_resolution_statements(stmt_data, i):
     return i, statements
 
 
+def state_map_tx(tx,height,fee_multiplier,state_map):
+    """take a transaction, height, fee multiplier, and update a given state map with resulting state changes"""
+
+    # TODO: handle flows for *all* mosaics, not just XYM
+    address = public_key_to_address(unhexlify(tx['signer_public_key']))
+    
+    # transfer tx
+    if tx['type'] == b'4154':
+        if len(tx['payload']['message']) and tx['payload']['message'][0] == 0xfe:
+            state_map[address]['delegation_requests'][tx['payload']['recipient_address']].append(height)
+        elif tx['payload']['mosaics_count'] > 0:
+            for mosaic in tx['payload']['mosaics']:
+                if hex(mosaic['mosaic_id']) in ['0x6bed913fa20223f8','0xe74b99ba41f4afee']: # only care about XYM for now, hardcoded alias
+                    state_map[address]['xym_balance'][height] -= mosaic['amount']
+                    state_map[tx['payload']['recipient_address']]['xym_balance'][height] += mosaic['amount']
+    
+    # key link tx          
+    elif tx['type'] in [b'4243',b'424c',b'414c']:
+        if tx['type'] == b'4243': 
+            link_key = 'vrf_key_link'
+        elif tx['type'] == b'424c': 
+            link_key = 'node_key_link'
+        elif tx['type'] == b'414c': 
+            link_key = 'account_key_link'
+        if tx['payload']['link_action'] == 1:
+            state_map[address][link_key][public_key_to_address(tx['payload']['linked_public_key'])].append([height,np.inf])
+        else:
+            state_map[address][link_key][public_key_to_address(tx['payload']['linked_public_key'])][-1][1] = height
+    
+    # aggregate tx
+    elif tx['type'] in [b'4141',b'4241']:
+        for sub_tx in tx['payload']['embedded_transactions']:
+            state_map_tx(sub_tx,height,None,state_map)
+    
+    # handle fees
+    if fee_multiplier is not None:
+        state_map[address]['xym_balance'][height] -= min(tx['max_fee'],tx['size']*fee_multiplier)
+    
+    
+def state_map_rx(rx,height,state_map):
+    """take a receipt and height, and update a given state map with resulting state changes"""
+    
+    # rental fee receipts
+    if rx['type'] in [0x124D, 0x134E]: 
+        if hex(rx['payload']['mosaic_id']) in ['0x6bed913fa20223f8','0xe74b99ba41f4afee']:
+            state_map[rx['payload']['sender_address']]['xym_balance'][height] -= rx['payload']['amount']
+            state_map[rx['payload']['recipient_address']]['xym_balance'][height] += rx['payload']['amount']
+            
+    # balance change receipts (credit)
+    elif rx['type'] in [0x2143,0x2248,0x2348,0x2252,0x2352]:
+        state_map[rx['payload']['target_address']]['xym_balance'][height] += rx['payload']['amount']
+        
+    # balance change receipts (debit)
+    elif rx['type'] == [0x3148,0x3152]:
+        state_map[rx['payload']['target_address']]['xym_balance'][height] -= rx['payload']['amount']
+    
+    # aggregate receipts
+    if rx['type'] == 0xE143:
+        for sub_rx in rx['receipts']:
+            state_map_rx(sub_rx,height,state_map)
+
+
+def get_block_stats(block):
+    """Extract basic summary data from a block, and flatten for tabular manipulation"""
+    data = block['header'].copy()
+    data['statement_count'] = block['footer']['statement_count']
+    data['tx_count'] = block['footer']['tx_count']
+    data['total_fee'] = block['footer']['total_fee']
+    return data
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--block_dir", type=str, default='./data', help="Location of block store")
     parser.add_argument("--block_save_path", type=str, default='./block_data.pkl', help="path to write the extracted block data to")
     parser.add_argument("--statement_save_path", type=str, default='./stmt_data.pkl', help="path to write the extracted statement data to")
+    parser.add_argument("--state_save_path", type=str, default='./state_map.pkl', help="path to write the extracted statement data to")
     parser.add_argument("--header_save_path", type=str, default='./block_header_df.pkl', help="path to write the extracted data to")
     parser.add_argument("--block_extension", type=str, default='.dat', help="extension of block files; must be unique")
     parser.add_argument("--statement_extension", type=str, default='.stmt', help="extension of block files; must be unique")
@@ -831,7 +923,7 @@ if __name__ == "__main__":
             i += 4
             merkle_roots = None
             if args.save_subcache_merkle_roots:
-                merkle_roots = dict(zip(SUBCACHE_MERKLE_ROOT_FORMAT.keys(),struct.unpack('<'+''.join(SUBCACHE_MERKLE_ROOT_FORMAT.values()),blk_data[i:i+root_hash_len])))
+                merkle_roots = fmt_unpack(blk_data[i:i+root_hash_len],SUBCACHE_MERKLE_ROOT_FORMAT) 
             i += root_hash_len
 
             blocks.append({
@@ -866,9 +958,10 @@ if __name__ == "__main__":
         i = args.db_offset_bytes
 
         while i < len(stmt_data):
-            i, transaction_statements = read_transaction_statements(stmt_data, i)
-            i, address_resolution_statements = read_address_resolution_statements(stmt_data, i)
-            i, mosaic_resolution_statements = read_mosaic_resolution_statements(stmt_data, i)
+            # TODO: statement deserialization can probably be inlined efficiently or at least aggregated into one function
+            i, transaction_statements = deserialize_transaction_statements(stmt_data, i)
+            i, address_resolution_statements = deserialize_address_resolution_statements(stmt_data, i)
+            i, mosaic_resolution_statements = deserialize_mosaic_resolution_statements(stmt_data, i)
 
             stmt_height += 1
             statements['transaction_statements'][stmt_height] = transaction_statements
@@ -877,7 +970,25 @@ if __name__ == "__main__":
         
     print("statement data extraction complete!\n")
 
+    state_map = defaultdict(lambda:{
+        'xym_balance': defaultdict(lambda:0),
+        'delegation_requests': defaultdict(lambda:[]),
+        'vrf_key_link': defaultdict(lambda:[]),
+        'node_key_link': defaultdict(lambda:[]),
+        'account_key_link': defaultdict(lambda:[])
+    })
+        
+    for block in tqdm(blocks):
+        height = block['header']['height']
+        
+        for tx in block['footer']['transactions']:
+            state_map_tx(tx,height,block['header']['fee_multiplier'],state_map)
+        
+        for stmt in statements['transaction_statements'][height]:
+            for rx in stmt['receipts']:
+                state_map_rx(rx,height,state_map)
 
+    print("state mapping complete!\n")
 
     with open(args.block_save_path, 'wb') as file:
         pickle.dump(blocks,file)
@@ -895,4 +1006,12 @@ if __name__ == "__main__":
         pickle.dump(statements,file)
 
     print(f"statement data written to {args.statement_save_path}")
+
+
+    # TODO: fix state serialization; need to convert from defaultdict to regular dictionaries first
+    # with open(args.state_save_path, 'wb') as file:
+    #     pickle.dump(state_map,file)
+
+    # print(f"state data written to {args.statement_save_path}")
+
     print("exiting . . .")
