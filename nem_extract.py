@@ -40,6 +40,7 @@ HEADER_FORMAT = {
 
 HEADER_LEN = 372
 
+DB_OFFSET_BYTES = 800
 
 FOOTER_FORMAT = {
     'reserved': 'I'}
@@ -868,6 +869,43 @@ def get_block_stats(block):
     return data
 
 
+def statement_paths(statement_extension='.stmt', block_dir='./data'):    
+    statement_paths = glob.glob(os.path.join(block_dir,'**','*'+statement_extension),recursive=True)
+    statement_format_pattern = re.compile('[0-9]{5}'+statement_extension)
+    statement_paths = sorted(list(filter(lambda x: statement_format_pattern.match(os.path.basename(x)),statement_paths)))
+    return statement_paths
+
+
+def statements(statement_paths, db_offset_bytes=DB_OFFSET_BYTES):
+    stmt_height = 0
+    statement_paths_ = tqdm(statement_paths)
+    for path in statement_paths_:
+        statements = {
+            'transaction_statements':{},
+            'address_resolution_statements': {},
+            'mosaic_resolution_statements': {}
+            }
+
+        statement_paths_.set_description(f"processing statement file: {path}")
+
+        with open(path,mode='rb') as f:
+            stmt_data = f.read()
+        
+        i = db_offset_bytes
+
+        while i < len(stmt_data):
+            # TODO: statement deserialization can probably be inlined efficiently or at least aggregated into one function
+            i, transaction_statements = deserialize_transaction_statements(stmt_data, i)
+            i, address_resolution_statements = deserialize_address_resolution_statements(stmt_data, i)
+            i, mosaic_resolution_statements = deserialize_mosaic_resolution_statements(stmt_data, i)
+
+            stmt_height += 1
+            statements['transaction_statements'] = transaction_statements
+            statements['address_resolution_statements'] = address_resolution_statements
+            statements['mosaic_resolution_statements'] = mosaic_resolution_statements
+            yield stmt_height, statements
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -878,7 +916,7 @@ if __name__ == "__main__":
     parser.add_argument("--header_save_path", type=str, default='./block_header_df.pkl', help="path to write the extracted data to")
     parser.add_argument("--block_extension", type=str, default='.dat', help="extension of block files; must be unique")
     parser.add_argument("--statement_extension", type=str, default='.stmt', help="extension of block files; must be unique")
-    parser.add_argument("--db_offset_bytes", type=int, default=800, help="padding bytes at start of storage files")
+    parser.add_argument("--db_offset_bytes", type=int, default=DB_OFFSET_BYTES, help="padding bytes at start of storage files")
     parser.add_argument("--save_tx_hashes", action='store_true', help="flag to keep full tx hashes")
     parser.add_argument("--save_subcache_merkle_roots", action='store_true', help="flag to keep subcache merkle roots")
     args = parser.parse_args()
@@ -934,42 +972,6 @@ if __name__ == "__main__":
                 'subcache_merkle_roots':merkle_roots
             })
 
-    print("block data extraction complete!\n")
-
-    statement_paths = glob.glob(os.path.join(args.block_dir,'**','*'+args.statement_extension),recursive=True)
-    statement_format_pattern = re.compile('[0-9]{5}'+args.statement_extension)
-    statement_paths = tqdm(sorted(list(filter(lambda x: statement_format_pattern.match(os.path.basename(x)),statement_paths))))
-
-    statements = {
-        'transaction_statements':{},
-        'address_resolution_statements': {},
-        'mosaic_resolution_statements': {}
-    }
-
-    stmt_height = 0
-    
-    for path in statement_paths:
-
-        statement_paths.set_description(f"processing statement file: {path}")
-
-        with open(path,mode='rb') as f:
-            stmt_data = f.read()
-        
-        i = args.db_offset_bytes
-
-        while i < len(stmt_data):
-            # TODO: statement deserialization can probably be inlined efficiently or at least aggregated into one function
-            i, transaction_statements = deserialize_transaction_statements(stmt_data, i)
-            i, address_resolution_statements = deserialize_address_resolution_statements(stmt_data, i)
-            i, mosaic_resolution_statements = deserialize_mosaic_resolution_statements(stmt_data, i)
-
-            stmt_height += 1
-            statements['transaction_statements'][stmt_height] = transaction_statements
-            statements['address_resolution_statements'][stmt_height] = address_resolution_statements
-            statements['mosaic_resolution_statements'][stmt_height] = mosaic_resolution_statements
-        
-    print("statement data extraction complete!\n")
-
     state_map = defaultdict(lambda:{
         'xym_balance': defaultdict(lambda:0),
         'delegation_requests': defaultdict(lambda:[]),
@@ -977,19 +979,27 @@ if __name__ == "__main__":
         'node_key_link': defaultdict(lambda:[]),
         'account_key_link': defaultdict(lambda:[])
     })
-        
-    for block in tqdm(blocks):
+
+    statements_ = statements(statement_paths(block_dir=args.block_dir, statement_extension=args.statement_extension))
+    blocks_ = tqdm(blocks)
+    for block in blocks_:
         height = block['header']['height']
-        
+        blocks_.set_description(f"processing block: {height}")
         for tx in block['footer']['transactions']:
             state_map_tx(tx,height,block['header']['fee_multiplier'],state_map)
-        
-        for stmt in statements['transaction_statements'][height]:
+        s_height, stmts = next(statements_)
+        assert s_height == height
+        for stmt in stmts['transaction_statements']:
             for rx in stmt['receipts']:
                 state_map_rx(rx,height,state_map)
 
-    print("state mapping complete!\n")
+    assert [*statements_] == []
 
+    print("block data extraction complete!\n")
+    print("statement data extraction complete!\n")
+
+    print("state mapping complete!\n")
+    
     with open(args.block_save_path, 'wb') as file:
         pickle.dump(blocks,file)
 
@@ -1002,8 +1012,8 @@ if __name__ == "__main__":
 
     print(f"header data written to {args.header_save_path}")
 
-    with open(args.statement_save_path, 'wb') as file:
-        pickle.dump(statements,file)
+    # with open(args.statement_save_path, 'wb') as file:
+    #     pickle.dump(statements,file)
 
     print(f"statement data written to {args.statement_save_path}")
 
