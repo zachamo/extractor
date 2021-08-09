@@ -980,30 +980,30 @@ if __name__ == "__main__":
         'account_key_link': defaultdict(lambda:[])
     })
 
-    statements_ = statements(statement_paths(block_dir=args.block_dir, statement_extension=args.statement_extension))
-    blocks_ = tqdm(blocks)
-    for block in blocks_:
-        height = block['header']['height']
-        blocks_.set_description(f"processing block: {height}")
-        for tx in block['footer']['transactions']:
-            state_map_tx(tx,height,block['header']['fee_multiplier'],state_map)
-        s_height, stmts = next(statements_)
-        assert s_height == height
-        for stmt in stmts['transaction_statements']:
-            for rx in stmt['receipts']:
-                state_map_rx(rx,height,state_map)
+    with open(args.statement_save_path, 'wb') as file:
+         statements_ = statements(statement_paths(block_dir=args.block_dir, statement_extension=args.statement_extension))
+         blocks_ = tqdm(blocks)
+         for block in blocks_:
+            height = block['header']['height']
+            blocks_.set_description(f"processing block: {height}")
+            for tx in block['footer']['transactions']:
+                 state_map_tx(tx,height,block['header']['fee_multiplier'],state_map)
+            s_height, stmts = next(statements_)
+            pickle.dump((s_height, stmts),file)
+            assert s_height == height
+            for stmt in stmts['transaction_statements']:
+                for rx in stmt['receipts']:
+                    state_map_rx(rx,height,state_map)
 
     assert [*statements_] == []
 
     print("block data extraction complete!\n")
     print("statement data extraction complete!\n")
-
+    print(f"block data written to {args.block_save_path}")
     print("state mapping complete!\n")
     
     with open(args.block_save_path, 'wb') as file:
         pickle.dump(blocks,file)
-
-    print(f"block data written to {args.block_save_path}")
 
     header_df = pd.DataFrame.from_records([get_block_stats(x) for x in blocks])
     header_df['dateTime'] = pd.to_datetime(header_df['timestamp'],origin=pd.to_datetime('2021-03-16 00:06:25'),unit='ms')
@@ -1012,8 +1012,6 @@ if __name__ == "__main__":
 
     print(f"header data written to {args.header_save_path}")
 
-    # with open(args.statement_save_path, 'wb') as file:
-    #     pickle.dump(statements,file)
 
     print(f"statement data written to {args.statement_save_path}")
 
