@@ -11,7 +11,8 @@ import pdb
 import pickle
 import re
 import struct
-import tqdm
+import operator as op
+import functools
 from binascii import hexlify, unhexlify
 from collections import defaultdict
 from tqdm import tqdm
@@ -903,7 +904,7 @@ def statements(statement_paths, db_offset_bytes=DB_OFFSET_BYTES):
             statements['transaction_statements'] = transaction_statements
             statements['address_resolution_statements'] = address_resolution_statements
             statements['mosaic_resolution_statements'] = mosaic_resolution_statements
-            yield stmt_height, statements
+            yield stmt_height, statements, path
 
 
 if __name__ == "__main__":
@@ -919,8 +920,13 @@ if __name__ == "__main__":
     parser.add_argument("--db_offset_bytes", type=int, default=DB_OFFSET_BYTES, help="padding bytes at start of storage files")
     parser.add_argument("--save_tx_hashes", action='store_true', help="flag to keep full tx hashes")
     parser.add_argument("--save_subcache_merkle_roots", action='store_true', help="flag to keep subcache merkle roots")
+    parser.add_argument("--quiet", action='store_true', help="do not show progress bars")
+    
     args = parser.parse_args()
 
+    if args.quiet:
+        tqdm = functools.partial(tqdm, disable=True)
+    
     block_paths = glob.glob(os.path.join(args.block_dir,'**','*'+args.block_extension),recursive=True)
     block_format_pattern = re.compile('[0-9]{5}'+args.block_extension)
     block_paths = tqdm(sorted(list(filter(lambda x: block_format_pattern.match(os.path.basename(x)),block_paths))))
@@ -981,19 +987,25 @@ if __name__ == "__main__":
     })
 
     statements_ = statements(statement_paths(block_dir=args.block_dir, statement_extension=args.statement_extension))
-    blocks_ = tqdm(blocks)
+    blocks_ = tqdm(sorted(blocks, key=lambda b:b['header']['height']))
+    s_height, stmts, s_path = next(statements_)
     for block in blocks_:
         height = block['header']['height']
         blocks_.set_description(f"processing block: {height}")
         for tx in block['footer']['transactions']:
             state_map_tx(tx,height,block['header']['fee_multiplier'],state_map)
-        s_height, stmts = next(statements_)
-        assert s_height == height
+
+        if s_height > height:
+            continue
+
+        while s_height < height:
+            s_height, stmts, s_path = next(statements_)
+
         for stmt in stmts['transaction_statements']:
             for rx in stmt['receipts']:
                 state_map_rx(rx,height,state_map)
 
-    assert [*statements_] == []
+    assert len([*statements_]) == 0
 
     print("block data extraction complete!\n")
     print("statement data extraction complete!\n")
