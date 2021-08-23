@@ -16,6 +16,8 @@ import functools
 from binascii import hexlify, unhexlify
 from collections import defaultdict
 from tqdm import tqdm
+import msgpack
+
 
 # describe the fixed structure of block entity bytes for unpacking
 
@@ -998,24 +1000,34 @@ if __name__ == "__main__":
     statements_ = statements(statement_paths(block_dir=args.block_dir, statement_extension=args.statement_extension))
     blocks_ = tqdm(sorted(blocks, key=lambda b:b['header']['height']))
     s_height, stmts, s_path = next(statements_)
-    for block in blocks_:
-        height = block['header']['height']
-        blocks_.set_description(f"processing block: {height}")
-        for tx in block['footer']['transactions']:
-            state_map_tx(tx,height,block['header']['fee_multiplier'],state_map)
 
-        if s_height > height:
-            continue
+    with open(args.statement_save_path, 'wb') as file:
+        pickle.dump(statements,file)
 
-        while s_height < height:
-            s_height, stmts, s_path = next(statements_)
+    print(f"statement data written to {args.statement_save_path}")
 
-        for stmt in stmts['transaction_statements']:
-            for rx in stmt['receipts']:
-                state_map_rx(rx,height,state_map)
+    with open(args.statement_save_path, 'wb') as f:
+        for block in blocks_:
+            height = block['header']['height']
+            blocks_.set_description(f"processing block: {height}")
+            for tx in block['footer']['transactions']:
+                state_map_tx(tx,height,block['header']['fee_multiplier'],state_map)
+
+            if s_height > height:
+                continue
+
+            while s_height < height:
+                s_height, stmts, s_path = next(statements_)
+
+            for stmt in stmts['transaction_statements']:
+                for rx in stmt['receipts']:
+                    state_map_rx(rx,height,state_map)
+            pack_data = msgpack.packb((s_height, stmts,))
+            f.write(pack_data)
 
     assert len([*statements_]) == 0
 
+    print(f"statement data written to {args.statement_save_path}")
     print("block data extraction complete!\n")
     print("statement data extraction complete!\n")
 
@@ -1032,12 +1044,6 @@ if __name__ == "__main__":
     header_df.to_pickle(args.header_save_path)
 
     print(f"header data written to {args.header_save_path}")
-
-    # with open(args.statement_save_path, 'wb') as file:
-    #     pickle.dump(statements,file)
-
-    print(f"statement data written to {args.statement_save_path}")
-
 
     state_map_ = state_map_to_dict(state_map)
 
