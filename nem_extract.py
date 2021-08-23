@@ -17,6 +17,7 @@ from binascii import hexlify, unhexlify
 from collections import defaultdict
 from tqdm import tqdm
 import msgpack
+import sys
 
 
 # describe the fixed structure of block entity bytes for unpacking
@@ -918,28 +919,11 @@ def state_map_to_dict(state_map):
     return sm_dict
 
 
-if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--block_dir", type=str, default='./data', help="Location of block store")
-    parser.add_argument("--block_save_path", type=str, default='./block_data.pkl', help="path to write the extracted block data to")
-    parser.add_argument("--statement_save_path", type=str, default='./stmt_data.pkl', help="path to write the extracted statement data to")
-    parser.add_argument("--state_save_path", type=str, default='./state_map.pkl', help="path to write the extracted statement data to")
-    parser.add_argument("--header_save_path", type=str, default='./block_header_df.pkl', help="path to write the extracted data to")
-    parser.add_argument("--block_extension", type=str, default='.dat', help="extension of block files; must be unique")
-    parser.add_argument("--statement_extension", type=str, default='.stmt', help="extension of block files; must be unique")
-    parser.add_argument("--db_offset_bytes", type=int, default=DB_OFFSET_BYTES, help="padding bytes at start of storage files")
-    parser.add_argument("--save_tx_hashes", action='store_true', help="flag to keep full tx hashes")
-    parser.add_argument("--save_subcache_merkle_roots", action='store_true', help="flag to keep subcache merkle roots")
-    parser.add_argument("--quiet", action='store_true', help="do not show progress bars")
-    
-    args = parser.parse_args()
-
-    if args.quiet:
-        tqdm = functools.partial(tqdm, disable=True)
+def main(args):
     
     block_paths = glob.glob(os.path.join(args.block_dir,'**','*'+args.block_extension),recursive=True)
     block_format_pattern = re.compile('[0-9]{5}'+args.block_extension)
+
     block_paths = tqdm(sorted(list(filter(lambda x: block_format_pattern.match(os.path.basename(x)),block_paths))))
 
     blocks = []
@@ -998,6 +982,7 @@ if __name__ == "__main__":
     })
 
     statements_ = statements(statement_paths(block_dir=args.block_dir, statement_extension=args.statement_extension))
+
     blocks_ = tqdm(sorted(blocks, key=lambda b:b['header']['height']))
     s_height, stmts, s_path = next(statements_)
 
@@ -1053,3 +1038,29 @@ if __name__ == "__main__":
     # print(f"state data written to {args.statement_save_path}")
 
     print("exiting . . .")
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(argv)
+    parser.add_argument("--block_dir", type=str, default='./data', help="Location of block store")
+    parser.add_argument("--block_save_path", type=str, default='./block_data.pkl', help="path to write the extracted block data to")
+    parser.add_argument("--statement_save_path", type=str, default='./stmt_data.pkl', help="path to write the extracted statement data to")
+    parser.add_argument("--state_save_path", type=str, default='./state_map.pkl', help="path to write the extracted statement data to")
+    parser.add_argument("--header_save_path", type=str, default='./block_header_df.pkl', help="path to write the extracted data to")
+    parser.add_argument("--block_extension", type=str, default='.dat', help="extension of block files; must be unique")
+    parser.add_argument("--statement_extension", type=str, default='.stmt', help="extension of block files; must be unique")
+    parser.add_argument("--db_offset_bytes", type=int, default=DB_OFFSET_BYTES, help="padding bytes at start of storage files")
+    parser.add_argument("--save_tx_hashes", action='store_true', help="flag to keep full tx hashes")
+    parser.add_argument("--save_subcache_merkle_roots", action='store_true', help="flag to keep subcache merkle roots")
+    parser.add_argument("--quiet", action='store_true', help="do not show progress bars")
+    
+    args = parser.parse_args()
+
+    return args
+
+
+if __name__ == "__main__":
+    args = parse_args(sys.argv)
+    if args.quiet:
+        tqdm = functools.partial(tqdm, disable=True)
+    main(args)
