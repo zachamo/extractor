@@ -11,10 +11,14 @@ import pdb
 import pickle
 import re
 import struct
-import tqdm
+import operator as op
+import functools
 from binascii import hexlify, unhexlify
 from collections import defaultdict
 from tqdm import tqdm
+import msgpack
+import sys
+
 
 # describe the fixed structure of block entity bytes for unpacking
 
@@ -40,6 +44,7 @@ HEADER_FORMAT = {
 
 HEADER_LEN = 372
 
+DB_OFFSET_BYTES = 800
 
 FOOTER_FORMAT = {
     'reserved': 'I'}
@@ -868,23 +873,57 @@ def get_block_stats(block):
     return data
 
 
-if __name__ == "__main__":
+def statement_paths(statement_extension='.stmt', block_dir='./data'):    
+    statement_paths = glob.glob(os.path.join(block_dir,'**','*'+statement_extension),recursive=True)
+    statement_format_pattern = re.compile('[0-9]{5}'+statement_extension)
+    statement_paths = sorted(list(filter(lambda x: statement_format_pattern.match(os.path.basename(x)),statement_paths)))
+    return statement_paths
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--block_dir", type=str, default='./data', help="Location of block store")
-    parser.add_argument("--block_save_path", type=str, default='./block_data.pkl', help="path to write the extracted block data to")
-    parser.add_argument("--statement_save_path", type=str, default='./stmt_data.pkl', help="path to write the extracted statement data to")
-    parser.add_argument("--state_save_path", type=str, default='./state_map.pkl', help="path to write the extracted statement data to")
-    parser.add_argument("--header_save_path", type=str, default='./block_header_df.pkl', help="path to write the extracted data to")
-    parser.add_argument("--block_extension", type=str, default='.dat', help="extension of block files; must be unique")
-    parser.add_argument("--statement_extension", type=str, default='.stmt', help="extension of block files; must be unique")
-    parser.add_argument("--db_offset_bytes", type=int, default=800, help="padding bytes at start of storage files")
-    parser.add_argument("--save_tx_hashes", action='store_true', help="flag to keep full tx hashes")
-    parser.add_argument("--save_subcache_merkle_roots", action='store_true', help="flag to keep subcache merkle roots")
-    args = parser.parse_args()
 
+def statements(statement_paths, db_offset_bytes=DB_OFFSET_BYTES):
+    stmt_height = 0
+    statement_paths_ = tqdm(statement_paths)
+    for path in statement_paths_:
+        statements = {
+            'transaction_statements':{},
+            'address_resolution_statements': {},
+            'mosaic_resolution_statements': {}
+            }
+
+        statement_paths_.set_description(f"processing statement file: {path}")
+
+        with open(path,mode='rb') as f:
+            stmt_data = f.read()
+        
+        i = db_offset_bytes
+
+        while i < len(stmt_data):
+            # TODO: statement deserialization can probably be inlined efficiently or at least aggregated into one function
+            i, transaction_statements = deserialize_transaction_statements(stmt_data, i)
+            i, address_resolution_statements = deserialize_address_resolution_statements(stmt_data, i)
+            i, mosaic_resolution_statements = deserialize_mosaic_resolution_statements(stmt_data, i)
+
+            stmt_height += 1
+            statements['transaction_statements'] = transaction_statements
+            statements['address_resolution_statements'] = address_resolution_statements
+            statements['mosaic_resolution_statements'] = mosaic_resolution_statements
+            yield stmt_height, statements, path
+
+
+def state_map_to_dict(state_map):
+    sm_dict = dict(state_map)
+    for k, v in sm_dict.items():
+        sm_dict[k] = dict(v)
+        for kk, vv in v.items():
+            sm_dict[k][kk] = dict(vv)
+    return sm_dict
+
+
+def main(args):
+    
     block_paths = glob.glob(os.path.join(args.block_dir,'**','*'+args.block_extension),recursive=True)
     block_format_pattern = re.compile('[0-9]{5}'+args.block_extension)
+
     block_paths = tqdm(sorted(list(filter(lambda x: block_format_pattern.match(os.path.basename(x)),block_paths))))
 
     blocks = []
@@ -934,42 +973,6 @@ if __name__ == "__main__":
                 'subcache_merkle_roots':merkle_roots
             })
 
-    print("block data extraction complete!\n")
-
-    statement_paths = glob.glob(os.path.join(args.block_dir,'**','*'+args.statement_extension),recursive=True)
-    statement_format_pattern = re.compile('[0-9]{5}'+args.statement_extension)
-    statement_paths = tqdm(sorted(list(filter(lambda x: statement_format_pattern.match(os.path.basename(x)),statement_paths))))
-
-    statements = {
-        'transaction_statements':{},
-        'address_resolution_statements': {},
-        'mosaic_resolution_statements': {}
-    }
-
-    stmt_height = 0
-    
-    for path in statement_paths:
-
-        statement_paths.set_description(f"processing statement file: {path}")
-
-        with open(path,mode='rb') as f:
-            stmt_data = f.read()
-        
-        i = args.db_offset_bytes
-
-        while i < len(stmt_data):
-            # TODO: statement deserialization can probably be inlined efficiently or at least aggregated into one function
-            i, transaction_statements = deserialize_transaction_statements(stmt_data, i)
-            i, address_resolution_statements = deserialize_address_resolution_statements(stmt_data, i)
-            i, mosaic_resolution_statements = deserialize_mosaic_resolution_statements(stmt_data, i)
-
-            stmt_height += 1
-            statements['transaction_statements'][stmt_height] = transaction_statements
-            statements['address_resolution_statements'][stmt_height] = address_resolution_statements
-            statements['mosaic_resolution_statements'][stmt_height] = mosaic_resolution_statements
-        
-    print("statement data extraction complete!\n")
-
     state_map = defaultdict(lambda:{
         'xym_balance': defaultdict(lambda:0),
         'delegation_requests': defaultdict(lambda:[]),
@@ -977,19 +980,44 @@ if __name__ == "__main__":
         'node_key_link': defaultdict(lambda:[]),
         'account_key_link': defaultdict(lambda:[])
     })
-        
-    for block in tqdm(blocks):
-        height = block['header']['height']
-        
-        for tx in block['footer']['transactions']:
-            state_map_tx(tx,height,block['header']['fee_multiplier'],state_map)
-        
-        for stmt in statements['transaction_statements'][height]:
-            for rx in stmt['receipts']:
-                state_map_rx(rx,height,state_map)
+
+    statements_ = statements(statement_paths(block_dir=args.block_dir, statement_extension=args.statement_extension))
+
+    blocks_ = tqdm(sorted(blocks, key=lambda b:b['header']['height']))
+    s_height, stmts, s_path = next(statements_)
+
+    with open(args.statement_save_path, 'wb') as file:
+        pickle.dump(statements,file)
+
+    print(f"statement data written to {args.statement_save_path}")
+
+    with open(args.statement_save_path, 'wb') as f:
+        for block in blocks_:
+            height = block['header']['height']
+            blocks_.set_description(f"processing block: {height}")
+            for tx in block['footer']['transactions']:
+                state_map_tx(tx,height,block['header']['fee_multiplier'],state_map)
+
+            if s_height > height:
+                continue
+
+            while s_height < height:
+                s_height, stmts, s_path = next(statements_)
+
+            for stmt in stmts['transaction_statements']:
+                for rx in stmt['receipts']:
+                    state_map_rx(rx,height,state_map)
+            pack_data = msgpack.packb((s_height, stmts,))
+            f.write(pack_data)
+
+    assert len([*statements_]) == 0
+
+    print(f"statement data written to {args.statement_save_path}")
+    print("block data extraction complete!\n")
+    print("statement data extraction complete!\n")
 
     print("state mapping complete!\n")
-
+    
     with open(args.block_save_path, 'wb') as file:
         pickle.dump(blocks,file)
 
@@ -1002,16 +1030,37 @@ if __name__ == "__main__":
 
     print(f"header data written to {args.header_save_path}")
 
-    with open(args.statement_save_path, 'wb') as file:
-        pickle.dump(statements,file)
+    state_map_ = state_map_to_dict(state_map)
 
-    print(f"statement data written to {args.statement_save_path}")
-
-
-    # TODO: fix state serialization; need to convert from defaultdict to regular dictionaries first
-    # with open(args.state_save_path, 'wb') as file:
-    #     pickle.dump(state_map,file)
+    with open(args.state_save_path, 'wb') as file:
+        pickle.dump(state_map_,file)
 
     # print(f"state data written to {args.statement_save_path}")
 
     print("exiting . . .")
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(argv)
+    parser.add_argument("--block_dir", type=str, default='./data', help="Location of block store")
+    parser.add_argument("--block_save_path", type=str, default='./block_data.pkl', help="path to write the extracted block data to")
+    parser.add_argument("--statement_save_path", type=str, default='./stmt_data.pkl', help="path to write the extracted statement data to")
+    parser.add_argument("--state_save_path", type=str, default='./state_map.pkl', help="path to write the extracted statement data to")
+    parser.add_argument("--header_save_path", type=str, default='./block_header_df.pkl', help="path to write the extracted data to")
+    parser.add_argument("--block_extension", type=str, default='.dat', help="extension of block files; must be unique")
+    parser.add_argument("--statement_extension", type=str, default='.stmt', help="extension of block files; must be unique")
+    parser.add_argument("--db_offset_bytes", type=int, default=DB_OFFSET_BYTES, help="padding bytes at start of storage files")
+    parser.add_argument("--save_tx_hashes", action='store_true', help="flag to keep full tx hashes")
+    parser.add_argument("--save_subcache_merkle_roots", action='store_true', help="flag to keep subcache merkle roots")
+    parser.add_argument("--quiet", action='store_true', help="do not show progress bars")
+    
+    args = parser.parse_args()
+
+    return args
+
+
+if __name__ == "__main__":
+    args = parse_args(sys.argv)
+    if args.quiet:
+        tqdm = functools.partial(tqdm, disable=True)
+    main(args)
