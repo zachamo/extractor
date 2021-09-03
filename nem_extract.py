@@ -1,24 +1,19 @@
 """NEM Extractor Script"""
 
 import argparse
-import base64
 import glob
-import hashlib
-import numpy as np
+import functools
+import msgpack
 import os
 import pandas as pd
-import pdb
-import pickle
 import re
 import struct
-import operator as op
-import functools
-from binascii import hexlify, unhexlify
-from collections import defaultdict
-from tqdm import tqdm
-import msgpack
 import sys
+from binascii import hexlify, unhexlify
+from tqdm import tqdm
 
+from state import XYMStateMap
+from util import encode_address, public_key_to_address
 
 # describe the fixed structure of block entity bytes for unpacking
 
@@ -164,45 +159,6 @@ def fmt_unpack(buffer,struct_format):
             struct.unpack('<'+''.join(struct_format.values()),buffer)
         )
     )
-
-
-def encode_address(address):
-    """Encode address bytes into base32 with appropriate offset and pad"""
-    return base64.b32encode(address + bytes(0)).decode('utf8')[0:-1]
-
-
-def public_key_to_address(public_key,network=104):
-    """Convert a public key to an address
-    
-    Parameters
-    ----------
-    public_key : bytes
-        Byte array containing public key
-    network: int, default=104
-        Network identifier
-
-    Returns
-    -------
-    address: bytes
-        Address associated with input public_key
-    """
-    part_one_hash_builder = hashlib.sha3_256()
-    part_one_hash_builder.update(public_key)
-    part_one_hash = part_one_hash_builder.digest()
-
-    part_two_hash_builder = hashlib.new('ripemd160')
-    part_two_hash_builder.update(part_one_hash)
-    part_two_hash = part_two_hash_builder.digest()
-    
-    base = bytes([network]) + part_two_hash
-
-    part_three_hash_builder = hashlib.sha3_256()
-    part_three_hash_builder.update(base)
-    checksum = part_three_hash_builder.digest()[0:3]
-    
-    address = base + checksum
-    
-    return encode_address(address)
 
 
 def deserialize_header(header_data):
@@ -989,117 +945,6 @@ def get_block_stats(block):
     return data
 
 
-class XYMStateMap():
-    """Efficient, mutable representation of XYM network state
-
-    Attributes
-    ----------
-    state_map: defaultdict
-        Dict mapping addresses to recorded quantities
-    tracked_mosaics: list[str]
-        List of string aliases for mosaic(s) to track the balance of
-
-    """
-
-    def __init__(self):
-        self.state_map = defaultdict(lambda:{
-            'xym_balance': defaultdict(lambda:0),
-            'delegation_requests': defaultdict(lambda:[]),
-            'vrf_key_link': defaultdict(lambda:[]),
-            'node_key_link': defaultdict(lambda:[]),
-            'account_key_link': defaultdict(lambda:[])
-        })
-        self.tracked_mosaics = ['0x6bed913fa20223f8','0xe74b99ba41f4afee'] # only care about XYM for now, hardcoded alias
-
-
-    def insert_tx(self,tx,height,fee_multiplier):
-        """Insert a transaction into the state map and record resulting changes
-        
-        Parameters
-        ----------
-        tx: dict
-            Deserialized transaction
-        height: int
-            Height of transaction
-        fee_multiplier: float
-            Fee multiplier for transaction's containing block
-
-        """
-
-        # TODO: handle flows for *all* mosaics, not just XYM
-        address = public_key_to_address(unhexlify(tx['signer_public_key']))
-        
-        if tx['type'] == b'4154': # transfer tx
-            if len(tx['payload']['message']) and tx['payload']['message'][0] == 0xfe:
-                self.state_map[address]['delegation_requests'][tx['payload']['recipient_address']].append(height)
-            elif tx['payload']['mosaics_count'] > 0:
-                for mosaic in tx['payload']['mosaics']:
-                    if hex(mosaic['mosaic_id']) in self.tracked_mosaics:
-                        self.state_map[address]['xym_balance'][height] -= mosaic['amount']
-                        self.state_map[tx['payload']['recipient_address']]['xym_balance'][height] += mosaic['amount']
-        
-        elif tx['type'] in [b'4243',b'424c',b'414c']: # key link tx          
-            if tx['type'] == b'4243': 
-                link_key = 'vrf_key_link'
-            elif tx['type'] == b'424c': 
-                link_key = 'node_key_link'
-            elif tx['type'] == b'414c': 
-                link_key = 'account_key_link'
-            if tx['payload']['link_action'] == 1:
-                self.state_map[address][link_key][public_key_to_address(tx['payload']['linked_public_key'])].append([height,np.inf])
-            else:
-                self.state_map[address][link_key][public_key_to_address(tx['payload']['linked_public_key'])][-1][1] = height
-        
-        elif tx['type'] in [b'4141',b'4241']: # aggregate tx
-            for sub_tx in tx['payload']['embedded_transactions']:
-                self.insert_tx(sub_tx,height,None)
-        
-        if fee_multiplier is not None: # handle fees
-            self.state_map[address]['xym_balance'][height] -= min(tx['max_fee'],tx['size']*fee_multiplier)
-
-
-    def insert_rx(self,rx,height):
-        """Insert a receipt into the state map and record resulting changes
-        
-        Parameters
-        ----------
-        rx: dict
-            Deserialized receipt
-        height: int
-            Height of receipt
-
-        """
-    
-        # rental fee receipts
-        if rx['type'] in [0x124D, 0x134E]: 
-            if hex(rx['payload']['mosaic_id']) in ['0x6bed913fa20223f8','0xe74b99ba41f4afee']:
-                self.state_map[rx['payload']['sender_address']]['xym_balance'][height] -= rx['payload']['amount']
-                self.state_map[rx['payload']['recipient_address']]['xym_balance'][height] += rx['payload']['amount']
-                
-        # balance change receipts (credit)
-        elif rx['type'] in [0x2143,0x2248,0x2348,0x2252,0x2352]:
-            self.state_map[rx['payload']['target_address']]['xym_balance'][height] += rx['payload']['amount']
-            
-        # balance change receipts (debit)
-        elif rx['type'] == [0x3148,0x3152]:
-            self.state_map[rx['payload']['target_address']]['xym_balance'][height] -= rx['payload']['amount']
-        
-        # aggregate receipts
-        if rx['type'] == 0xE143:
-            for sub_rx in rx['receipts']:
-                self.insert_rx(sub_rx,height)
-
-
-    def to_dict(self):
-        """Convert internal state map to serializable dictionary"""
-        sm_dict = dict(self.state_map)
-        for k, v in sm_dict.items():
-            sm_dict[k] = dict(v)
-            for kk, vv in v.items():
-                sm_dict[k][kk] = dict(vv)
-        return sm_dict
-
-
 def main(args):
     
     block_format_pattern = re.compile('[0-9]{5}'+args.block_extension)
@@ -1157,6 +1002,7 @@ def main(args):
     
     with open(args.block_save_path, 'wb') as f:
         f.write(msgpack.packb(blocks))
+        # pickle.dump(blocks,f)
 
     print(f"block data written to {args.block_save_path}")
 
@@ -1169,8 +1015,7 @@ def main(args):
     with open(args.statement_save_path, 'wb') as f:
         for block in blocks:
             height = block['header']['height']
-            for tx in block['footer']['transactions']:
-                state_map.insert_tx(tx,height,block['header']['fee_multiplier'])
+            state_map.insert_block(block)
 
             if s_height > height:
                 continue
@@ -1197,8 +1042,7 @@ def main(args):
 
     print(f"header data written to {args.header_save_path}")
 
-    with open(args.state_save_path, 'wb') as f:
-        f.write(msgpack.packb(state_map.to_dict()))
+    state_map.to_msgpack(args.state_save_path)
 
     print(f"state data written to {args.state_save_path}")
 
