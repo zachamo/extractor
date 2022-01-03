@@ -1,4 +1,4 @@
-"""NEM Extractor Script"""
+"""XYM Extractor Script"""
 
 import argparse
 import glob
